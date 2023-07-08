@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>LinkedIn Network Visualization</title>
+    <style>
+        body {
+            font-family: 'Noto Sans', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f2f2f2;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 36px;
+            margin-bottom: 20px;
+        }
+
+        p {
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+
+        a {
+            color: #0077b5;
+            text-decoration: none;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .upload-button {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #0077b5;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        .upload-button:hover {
+            background-color: #005d8f;
+        }
+
+        #graph-container {
+            margin-top: 40px;
+            width: 100%;
+            height: calc(100vh - 200px);
+            background-color: #fff;
+            overflow: auto;
+        }
+
+        #search-container {
+            text-align: center;
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+
+        #search-input {
+            width: 300px;
+            padding: 8px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .highlight {
+            fill: #ffffff;
+            stroke: #ff9800;
+            stroke-width: 2px;
+            filter: drop-shadow(2px 2px 4px rgba(255, 193, 7, 0.5));
+            transition: fill 0.3s ease, stroke 0.3s ease, filter 0.3s ease;
+        }
+
+        .highlight:hover {
+            fill: #ffeb3b;
+            stroke: #ff9800;
+            stroke-width: 3px;
+            filter: drop-shadow(4px 4px 8px rgba(255, 235, 59, 0.7));
+        }
+    </style>
+
+</head>
+
+<body>
+<div class="container">
+    <img alt="Logo" src="tum_logo.png" width="100px">
+    <h1>Visualize your LinkedIn Connections</h1>
+    <p>
+        <a href="https://www.linkedin.com/help/linkedin/answer/66844/export-connections-from-linkedin"
+           target="_blank">
+            Export your Connections from LinkedIn
+        </a>
+    </p>
+    <p>Then import the CSV file here:</p>
+    <label class="upload-button" for="csv">Choose File</label>
+    <input id="csv" type="file">
+    <p>* You may need to remove the LinkedIn's notes from the CSV file</p>
+</div>
+<div id="search-container">
+    <input id="search-input" placeholder="Search for a name" type="text">
+</div>
+<div id="graph-container"></div>
+<div id="community-container"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3-tip/0.9.1/d3-tip.min.js"></script>
+<script src="https://d3js.org/d3.v4.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery-csv/1.0.11/jquery.csv.min.js"></script>
+<script>
+    const LINKED_IN_CSV_HEADER = 'First Name,Last Name,Email Address,Company,Position,Connected On';
+    const MINIMUM_COMPANY_SIZE = 3;
+    const fileInput = document.getElementById("csv");
+    const nodes = [];
+    const links = [];
+    const communities = new Map();
+
+    readFile = function () {
+        const reader = new FileReader();
+        reader.onload = function () {
+            const result = reader.result.substring(reader.result.search(LINKED_IN_CSV_HEADER));
+            const connections = $.csv.toObjects(result);
+
+            nodes.push({
+                "firstName": "You",
+                "lastName": "",
+                "name": "You",
+                "company": "",
+                "position": "",
+                "email": ""
+            });
+
+            const companyCountMap = new Map();
+            for (const source of connections) {
+                const company = source["Company"];
+                if (companyCountMap.has(company)) {
+                    companyCountMap.set(company, companyCountMap.get(company) + 1);
+                } else {
+                    companyCountMap.set(company, 1);
+                }
+            }
+
+            for (const source of connections) {
+                const sourceName = source["First Name"] + " " + source["Last Name"];
+                const sourceCompany = source["Company"];
+                const sourcePosition = source["Position"];
+                const sourceEmail = source["Email Address"];
+
+                if (companyCountMap.get(sourceCompany) >= MINIMUM_COMPANY_SIZE) {
+                    links.push({
+                        "source": "You",
+                        "target": sourceName
+                    });
+
+                    nodes.push({
+                        "firstName": source["First Name"],
+                        "lastName": source["Last Name"],
+                        "name": sourceName,
+                        "company": sourceCompany,
+                        "position": sourcePosition,
+                        "email": sourceEmail
+                    });
+
+                    for (const target of connections) {
+                        const targetName = target["First Name"] + " " + target["Last Name"];
+                        if (sourceName !== targetName && sourceCompany === target["Company"]) {
+                            links.push({
+                                "source": sourceName,
+                                "target": targetName
+                            });
+                        }
+                    }
+                }
+            }
+
+            const graph = {
+                "nodes": nodes,
+                "links": links
+            };
+
+            render(graph);
+            populateFilters(graph);
+        };
+        reader.readAsText(fileInput.files[0], 'UTF-8');
+    };
+
+
+    fileInput.addEventListener('change', readFile);
+
+    var simulation;
+
+    /*
+     * Modified from D3.js v4 Force Directed Graph with Labels
+     * https://bl.ocks.org/heybignick/3faf257bbbbc7743bb72310d03b86ee8
+     */
+    function render(graph) {
+        const width = $(window).width();
+        const height = $(window).height();
+
+        const svg = d3.select("#graph-container")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height);
+
+        const color = d3.scaleOrdinal(d3.schemeCategory20);
+
+        simulation = d3.forceSimulation()
+            .force("link", d3.forceLink().id(function (d) {
+                return d.name;
+            }))
+            .force("charge", d3.forceManyBody().strength(-300).distanceMax(0.4 * Math.min(width, height)))
+            .force("center", d3.forceCenter(width / 2, height / 2));
+
+        const link = svg.append("g")
+            .attr("class", "links")
+            .selectAll("line")
+            .data(graph.links)
+            .enter().append("line")
+            .attr("stroke-width", function (d) {
+                return color(d.company);
+            })
+            .attr("stroke", "#999")
+            .attr("stroke-opacity", 0.6)
+            .attr("stroke-width", 1);
+
+        const tooltip = d3.tip()
+            .attr('class', 'd3-tip')
+            .style("background", "#333")
+            .style("border-radius", "4px")
+            .style("padding", "6px 8px")
+            .style("color", "#fff")
+            .html(function (d) {
+                return `<div>
+                    <h4 style="margin: 0;">Name: ${d.name}</h4>
+                    <p style="margin: 4px 0;">Company: ${d.company}</p>
+                    <p style="margin: 4px 0;">Position: ${d.position}</p>
+                </div>`;
+            });
+
+
+        const node = svg.append("g")
+            .attr("class", "nodes")
+            .selectAll("g")
+            .data(graph.nodes)
+            .enter().append("g")
+            .call(tooltip);
+
+        const circles = node.append("circle")
+            .attr("r", 8)
+            .attr("fill", function (d) {
+                return color(d.company);
+            })
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended))
+            .on('mouseover', tooltip.show)
+            .on('mouseout', tooltip.hide);
+
+        node.append("text")
+            .style("text-anchor", "middle")
+            .text(function (d) {
+                return d.name;
+            })
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended))
+            .on('mouseover', tooltip.show)
+            .on('mouseout', tooltip.hide);
+
+        node.append("title")
+            .text(function (d) {
+                return d.company;
+            });
+
+
+        simulation
+            .nodes(graph.nodes)
+            .on("tick", ticked);
+
+        simulation.force("link")
+            .links(graph.links);
+
+        // Search Functionality
+        const searchInput = document.getElementById("search-input");
+
+        searchInput.addEventListener("input", function () {
+            const searchText = this.value.trim().toLowerCase();
+
+            // Clear any existing highlights
+            if (searchText === "") {
+                node.classed("highlight", false);
+                return;
+            }
+
+            // Comparing names of nodes to query
+            const matchedNodes = nodes.filter(function (d) {
+                return d.name.toLowerCase().includes(searchText);
+            });
+
+            // Highlight the matched nodes
+            node.classed("highlight", function (d) {
+                return matchedNodes.includes(d);
+            });
+        });
+
+
+        function ticked() {
+            link.attr("x1", function (d) {
+                return d.source.x;
+            })
+                .attr("y1", function (d) {
+                    return d.source.y;
+                })
+                .attr("x2", function (d) {
+                    return d.target.x;
+                })
+                .attr("y2", function (d) {
+                    return d.target.y;
+                });
+            node.attr("transform", function (d) {
+                return "translate(" + d.x + "," + d.y + ")";
+            });
+        }
+
+
+        function dragstarted(d) {
+            if (!d3.event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(d) {
+            d.fx = d3.event.x;
+            d.fy = d3.event.y;
+        }
+
+        function dragended(d) {
+            if (!d3.event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+    }
+</script>
+</body>
+
+</html>
